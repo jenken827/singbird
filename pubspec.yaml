@@ -1,0 +1,58 @@
+name: singbird
+description: "SingBird — unified network toolkit: full sing-box proxy engine and Netbird P2P VPN client with real-time monitoring"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^3.3.2
+  fl_chart: ^1.2.0
+  shared_preferences: ^2.3.4
+  intl: ^0.19.0
+  path_provider: ^2.1.5
+  sqflite: ^2.4.1
+  http: ^1.2.2
+  tray_manager: ^0.5.3
+  window_manager: ^0.5.2
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.7
+  talker: ^5.1.19
+  talker_flutter: ^5.1.19
+  get_it: ^9.2.1
+  hive_ce_flutter: ^2.3.4
+  flutter_secure_storage: ^10.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/tray_icon.ico
+
+flutter_launcher_icons:
+  image_path: "resources/singbird.png"
+  android: true
+  ios: false
+  windows:
+    generate: true
+  macos:
+    generate: false
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "resources/singbird.png"
+
+flutter_native_splash:
+  image: resources/singbird.png
+  color: "#FFFFFF"
+  android: true
+  ios: false
+  web: false
+  android_gravity: center
+  ios_content_mode: center
+  web_image_mode: center
