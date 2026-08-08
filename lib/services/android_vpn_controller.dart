@@ -1,6 +1,6 @@
 // lib/services/android_vpn_controller.dart
-/// Android-specific VPN control via MethodChannel.
-/// Falls back silently on non-Android platforms.
+// Android-specific VPN control via MethodChannel.
+// Falls back silently on non-Android platforms.
 import 'dart:convert';
 import 'dart:io' show Platform;
 import 'package:flutter/services.dart';
@@ -142,6 +142,14 @@ class AndroidVpnController {
   Future<void> setDisallowedPackages(List<String> packages) async {
     if (!_isAndroid) return;
     await _channel.invokeMethod('setDisallowedPackages', {'packages': packages});
+  }
+
+  /// Block mode: these apps lose internet access (engine package_name→block
+  /// rule). Clears allow/disallow — all apps flow through the VPN so the
+  /// engine sees (and drops) the blocked ones.
+  Future<void> setBlockedPackages(List<String> packages) async {
+    if (!_isAndroid) return;
+    await _channel.invokeMethod('setBlockedPackages', {'packages': packages});
   }
 
   /// Clear all app filters (all apps route through VPN).

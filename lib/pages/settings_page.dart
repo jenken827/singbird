@@ -17,6 +17,7 @@ import '../services/android_vpn_controller.dart';
 import '../providers/theme_provider.dart';
 import '../services/version_service.dart';
 import '../providers/monitor_provider.dart';
+import '../services/windows_process_filter.dart';
 import 'profiles_page.dart';
 import 'app_filter_page.dart';
 import '../main.dart' show talker;
@@ -35,6 +36,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   // Android VPN state
   bool _androidAppFilterActive = false;
 
+  // Windows app filter state
+  bool _winFilterActive = false;
+
   // Netbird credential fields
   late TextEditingController _nbSetupKeyCtrl;
   late TextEditingController _nbMgmtUrlCtrl;
@@ -52,6 +56,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     _load();
     if (Platform.isAndroid) {
       _queryAndroidVpn();
+    }
+    if (Platform.isWindows) {
+      _queryWinFilter();
     }
   }
 
@@ -108,6 +115,25 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
             (status['disallowedPackages'] as List?)?.cast<String>() ?? [];
         _androidAppFilterActive = allowed.isNotEmpty || disallowed.isNotEmpty;
       });
+    } catch (_) {
+      // Silent on error
+    }
+  }
+
+  // ── Windows App Filter ──
+
+  Future<void> _queryWinFilter() async {
+    try {
+      final mode = await WindowsProcessFilter.loadMode();
+      final selected = await WindowsProcessFilter.loadSelected();
+      final blocked = await WindowsProcessFilter.loadBlocked();
+      final manualPair = await WindowsProcessFilter.loadManualPair();
+      final manualBlock = await WindowsProcessFilter.loadManualBlock();
+      if (!mounted) return;
+      setState(() => _winFilterActive =
+          (mode != 'none' && (selected.isNotEmpty || manualPair.isNotEmpty)) ||
+              blocked.isNotEmpty ||
+              manualBlock.isNotEmpty);
     } catch (_) {
       // Silent on error
     }
@@ -438,6 +464,36 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                     },
                   ),
                 ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+
+          // ── Windows App Filter ──
+          if (Platform.isWindows) ...[
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.apps),
+                title: const Text('Per-App Filter'),
+                subtitle: Text(
+                  _winFilterActive
+                      ? 'Active — selected processes filtered'
+                      : 'Off — all processes use proxy rules',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade500,
+                  ),
+                ),
+                trailing: const Icon(Icons.chevron_right, size: 18),
+                onTap: () async {
+                  await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const AppFilterPage(),
+                    ),
+                  );
+                  _queryWinFilter();
+                },
               ),
             ),
             const SizedBox(height: 12),

@@ -20,6 +20,10 @@ class MonitorServiceWindows {
   final _eventController = StreamController<dynamic>.broadcast();
   Stream<dynamic> get events => _eventController.stream;
 
+  // 共享 HTTP 客户端：复用 keep-alive 连接。顶层 http.get() 每次调用都
+  // 新建连接+即关，1s 轮询会产生大量 TIME_WAIT(Windows 默认留存 240s)。
+  final http.Client _client = http.Client();
+
   Timer? _timer;
   bool _running = true;
   final _seenConnections = <String>{};
@@ -36,7 +40,7 @@ class MonitorServiceWindows {
   Future<Map<String, Map<String, int>>> _fetchLatencyMap() async {
     final map = <String, Map<String, int>>{};
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse('$_monitorUrl/connections?limit=500'))
           .timeout(const Duration(seconds: 3));
       if (resp.statusCode != 200) return map;
@@ -58,7 +62,7 @@ class MonitorServiceWindows {
 
   Future<void> _fetchDNS() async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse('$_monitorUrl/dns?since=$_lastDnsTimestamp&limit=50'))
           .timeout(const Duration(seconds: 3));
       if (resp.statusCode != 200) return;
@@ -85,7 +89,7 @@ class MonitorServiceWindows {
 
   Future<void> _fetchConnections() async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse('$_baseUrl/connections'))
           .timeout(const Duration(seconds: 3));
       if (resp.statusCode != 200) return;
@@ -145,6 +149,7 @@ class MonitorServiceWindows {
   void dispose() {
     _running = false;
     _timer?.cancel();
+    _client.close();
     _eventController.close();
   }
 
@@ -155,7 +160,7 @@ class MonitorServiceWindows {
   Future<List<Map<String, dynamic>>> queryDNS(
       {int since = 0, int limit = 200}) async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse(
               '$_monitorUrl/dns?since=$since&limit=$limit'))
           .timeout(const Duration(seconds: 5));
@@ -172,7 +177,7 @@ class MonitorServiceWindows {
   Future<List<Map<String, dynamic>>> queryConnections(
       {int since = 0, int limit = 200}) async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse(
               '$_monitorUrl/connections?since=$since&limit=$limit'))
           .timeout(const Duration(seconds: 5));
@@ -189,7 +194,7 @@ class MonitorServiceWindows {
   Future<List<Map<String, dynamic>>> queryAlerts(
       {int since = 0, int limit = 50}) async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse(
               '$_monitorUrl/alerts?since=$since&limit=$limit'))
           .timeout(const Duration(seconds: 5));
@@ -205,7 +210,7 @@ class MonitorServiceWindows {
   /// Query cumulative stats from all closed connections.
   Future<Map<String, dynamic>> queryStats() async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse('$_monitorUrl/stats'))
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode != 200) return {};
@@ -218,7 +223,7 @@ class MonitorServiceWindows {
   /// Health check — returns status and dropped record count.
   Future<Map<String, dynamic>> healthCheck() async {
     try {
-      final resp = await http
+      final resp = await _client
           .get(Uri.parse('$_monitorUrl/health'))
           .timeout(const Duration(seconds: 3));
       if (resp.statusCode != 200) return {'status': 'error'};

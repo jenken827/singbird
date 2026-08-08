@@ -7,6 +7,7 @@ import 'package:singbird/services/dir.dart';
 import 'package:singbird/services/local_storage.dart';
 import 'package:singbird/services/profile_store.dart';
 import 'app_logger.dart';
+import 'windows_process_filter.dart';
 
 /// Backend engine manager
 enum ConnectionStatus { disconnected, connecting, connected }
@@ -364,6 +365,15 @@ class SingBoxController {
       _lastError = 'Cannot find sing-box.exe';
       _statusController.add('error:$_lastError');
       throw Exception(_lastError);
+    }
+
+    // Windows: 按应用过滤 = 启动时把 process_name 规则注入生效配置
+    if (Platform.isWindows) {
+      final filtered = await WindowsProcessFilter.injectFilter(_configContent!);
+      if (filtered != null) {
+        _log('start: injected Windows app filter rules');
+        await _writeIfChanged(configPath, filtered);
+      }
     }
 
     await _startProcess();

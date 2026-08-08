@@ -34,6 +34,10 @@ class MainActivity : FlutterActivity() {
 
         // Track whether we've auto-started VPN to avoid duplicate attempts
         private var autoStarted = false
+
+        // getInstalledApps 结果缓存（应用列表极少变化，避免每次打开过滤页
+        // 都在 main 线程枚举全部应用 + 逐个 loadLabel 造成 ANR/卡顿）
+        private var installedAppsCache: String? = null
     }
 
     private var eventSink: EventChannel.EventSink? = null
@@ -152,12 +156,36 @@ class MainActivity : FlutterActivity() {
                             val running = SfVpnService.instance != null && boxService?.isRunning() == true
                             val allowed = SfVpnService.allowedPackages
                             val disallowed = SfVpnService.disallowedPackages
+                            val blocked = SfVpnService.blockedPackages
                             val map = mapOf(
                                 "running" to running,
                                 "allowedPackages" to (allowed?.toList() ?: emptyList<String>()),
-                                "disallowedPackages" to (disallowed?.toList() ?: emptyList<String>())
+                                "disallowedPackages" to (disallowed?.toList() ?: emptyList<String>()),
+                                "blockedPackages" to (blocked?.toList() ?: emptyList<String>())
                             )
                             result.success(map)
+                        }
+
+                        "resolveAppLabels" -> {
+                            // 包名 → 应用名(label)。连接历史页展示进程时使用；
+                            // 包名仍保留在 DB process_path 中供搜索。
+                            // 后台线程执行：批量解析 label 是逐包 binder 调用，
+                            // 放 main 线程会卡 UI。
+                            val packages = call.arguments as? List<*> ?: emptyList<Any?>()
+                            Thread {
+                                val map = HashMap<String, String>()
+                                val pm = packageManager
+                                for (p in packages) {
+                                    val pkg = p as? String ?: continue
+                                    val label = try {
+                                        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0))?.toString()
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                    map[pkg] = label ?: pkg
+                                }
+                                runOnUiThread { result.success(map) }
+                            }.start()
                         }
 
                         "getBackendVersion" -> {
@@ -185,14 +213,32 @@ class MainActivity : FlutterActivity() {
                             result.success(true)
                         }
 
+                        "setBlockedPackages" -> {
+                            val pkgs = call.argument<List<String>>("packages") ?: emptyList()
+                            SfVpnService.updateBlocked(pkgs.toSet(), this)
+                            result.success(true)
+                        }
+
                         "clearAppFilter" -> {
                             SfVpnService.updateAppFilter(null, null, this)
                             result.success(true)
                         }
 
                         "getInstalledApps" -> {
-                            val apps = getInstalledApps()
-                            result.success(apps)
+                            // 后台线程枚举全部已安装应用（逐包 loadLabel 是
+                            // 慢 binder 调用，main 线程会卡死 UI 造成 ANR）。
+                            // 结果缓存：仅 refresh 时重建。
+                            val refresh = (call.arguments as? Map<*, *>)?.get("refresh") == true
+                            val cached = installedAppsCache
+                            if (cached != null && !refresh) {
+                                result.success(cached)
+                            } else {
+                                Thread {
+                                    val apps = getInstalledApps()
+                                    installedAppsCache = apps
+                                    runOnUiThread { result.success(apps) }
+                                }.start()
+                            }
                         }
 
                         // ── History queries ──
@@ -343,16 +389,18 @@ class MainActivity : FlutterActivity() {
 
     private fun getInstalledApps(): String {
         val pm = packageManager
-        val intent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-        }
-        val activities = pm.queryIntentActivities(intent, 0)
-        val appList = activities
-            .filter { it.activityInfo.packageName != packageName } // exclude self
-            .map { resolveInfo ->
-                val ai = resolveInfo.activityInfo
-                val name = ai.loadLabel(pm).toString()
+        // 全部已安装应用（含无桌面图标的 IME/后台服务等），按包名去重。
+        // 之前用 ACTION_MAIN+CATEGORY_LAUNCHER 只列有图标的应用，输入法这类
+        // 应用（连接历史里能查到包名）在过滤列表里找不到，无法加入 block。
+        val appList = pm.getInstalledApplications(0)
+            .filter { it.packageName != packageName } // exclude self
+            .map { ai ->
                 val pkg = ai.packageName
+                val name = try {
+                    ai.loadLabel(pm).toString()
+                } catch (_: Exception) {
+                    pkg
+                }
                 mapOf("name" to name, "packageName" to pkg)
             }
             .distinctBy { it["packageName"] }

@@ -157,4 +157,28 @@ class MonitorService {
     }
     return _clashPoller!.queryStats();
   }
+
+  final Map<String, String> _appLabelCache = {};
+
+  /// 包名 → 应用名（Android；经 MainActivity 的 PackageManager 解析）。
+  /// 结果缓存；解析失败或非 Android 时原样返回包名。process_path 中
+  /// 仍保留包名，展示时再映射为 label，搜索两者都匹配。
+  Future<Map<String, String>> resolveAppLabels(List<String> packages) async {
+    if (!Platform.isAndroid || packages.isEmpty) return {};
+    final missing = packages
+        .where((p) => p.isNotEmpty && !_appLabelCache.containsKey(p))
+        .toSet()
+        .toList();
+    if (missing.isNotEmpty) {
+      try {
+        final map = await _controlChannel.invokeMapMethod<String, String>(
+            'resolveAppLabels', missing);
+        if (map != null) _appLabelCache.addAll(map);
+      } catch (_) {
+        // channel 失败不缓存，下次加载重试
+      }
+    }
+    return Map.fromEntries(
+        packages.map((p) => MapEntry(p, _appLabelCache[p] ?? p)));
+  }
 }

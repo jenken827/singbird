@@ -12,7 +12,9 @@ import android.net.NetworkCapabilities
 import android.net.VpnService as AndroidVpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.Process
 import java.io.File
+import java.net.InetSocketAddress
 import io.flutter.Log
 import io.nekohasekai.libbox.BridgeOptions
 import io.nekohasekai.libbox.BridgeSession
@@ -42,6 +44,7 @@ class VpnService : AndroidVpnService(), PlatformInterface {
         private const val PREFS_NAME = "vpn_filter_prefs"
         private const val KEY_ALLOWED = "allowed_packages"
         private const val KEY_DISALLOWED = "disallowed_packages"
+        private const val KEY_BLOCKED = "blocked_packages"
 
         @Volatile
         var instance: VpnService? = null
@@ -51,12 +54,14 @@ class VpnService : AndroidVpnService(), PlatformInterface {
         var allowedPackages: Set<String>? = null   // only these apps → VPN
         @Volatile
         var disallowedPackages: Set<String>? = null // these apps → bypass VPN
+        @Volatile
+        var blockedPackages: Set<String>? = null    // these apps → engine block rule (no internet)
 
-        /** Called from settings UI when app filter changes (persists + rebuilds). */
+        /** Called from settings UI when app filter changes (persists + rebuilds).
+         *  block 独立（updateBlocked），此处只写白/黑名单。 */
         fun updateAppFilter(allowed: Set<String>?, disallowed: Set<String>?, ctx: android.content.Context) {
             allowedPackages = allowed
             disallowedPackages = disallowed
-            // Persist across app restarts
             try {
                 ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
                     .edit()
@@ -68,16 +73,27 @@ class VpnService : AndroidVpnService(), PlatformInterface {
             instance?.rebuildVpn()
         }
 
+        /** Block mode: selected apps get engine-level block (no internet).
+         *  独立于白/黑名单（updateAppFilter 不清除本清单）。
+         *  内核过滤由调用方保证：block 应用必须放行进 VPN 才能被引擎规则命中。 */
+        fun updateBlocked(pkgs: Set<String>?, ctx: android.content.Context) {
+            blockedPackages = pkgs
+            try {
+                ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+                    .edit()
+                    .putStringSet(KEY_BLOCKED, pkgs)
+                    .apply()
+            } catch (_: Exception) {}
+            instance?.rebuildVpn()
+        }
+
         /** Restore persisted filter after process restart (app killed & relaunched). */
         fun loadPersistedFilter(ctx: android.content.Context) {
             try {
                 val prefs = ctx.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
-                val a = prefs.getStringSet(KEY_ALLOWED, null)
-                val d = prefs.getStringSet(KEY_DISALLOWED, null)
-                if (a != null || d != null) {
-                    allowedPackages = a
-                    disallowedPackages = d
-                }
+                allowedPackages = prefs.getStringSet(KEY_ALLOWED, null)
+                disallowedPackages = prefs.getStringSet(KEY_DISALLOWED, null)
+                blockedPackages = prefs.getStringSet(KEY_BLOCKED, null)
             } catch (_: Exception) {}
         }
     }
@@ -218,6 +234,27 @@ class VpnService : AndroidVpnService(), PlatformInterface {
                                 ib.put("stack", "gvisor")
                             }
                         }
+                    }
+                    // Block mode: prepend package_name → block rule (no internet).
+                    // Requires API 29+ (getConnectionOwnerUid); pre-Q procfs
+                    // path returns only UID so package_name rules won't match.
+                    if (!blockedPackages.isNullOrEmpty()) {
+                        val rulesArr = route.optJSONArray("rules")
+                        val blockRule = org.json.JSONObject()
+                            .put("type", "logical")
+                            .put("mode", "or")
+                            .put("outbound", "block")
+                            .put("rules", org.json.JSONArray().also { arr ->
+                                for (p in blockedPackages!!) {
+                                    arr.put(org.json.JSONObject().put("package_name", p))
+                                }
+                            })
+                        val newRules = org.json.JSONArray().put(blockRule)
+                        if (rulesArr != null) {
+                            for (i in 0 until rulesArr.length()) newRules.put(rulesArr.get(i))
+                        }
+                        route.put("rules", newRules)
+                        MarkerWriter.write("  Block rules injected: ${blockedPackages!!.size} packages")
                     }
                     sbConfig = obj.toString()
                     MarkerWriter.write("  Android TUN injected: stack=gvisor, auto_detect=false")
@@ -430,7 +467,7 @@ class VpnService : AndroidVpnService(), PlatformInterface {
         updateNotification(n.title)
     }
 
-    override fun useProcFS(): Boolean = false
+    override fun useProcFS(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q
     override fun usePlatformAutoDetectInterfaceControl(): Boolean = true
     override fun usePlatformBridge(): Boolean = false
     override fun usePlatformShell(): Boolean = false
@@ -442,7 +479,26 @@ class VpnService : AndroidVpnService(), PlatformInterface {
     override fun findConnectionOwner(
         ipProtocol: Int, src: String, srcPort: Int,
         dst: String, dstPort: Int
-    ): ConnectionOwner = ConnectionOwner()
+    ): ConnectionOwner {
+        // Android 10+: ConnectivityManager.getConnectionOwnerUid → UID →
+        // PackageManager.getPackagesForUid → package names. Mirrors official
+        // sing-box-for-android PlatformInterfaceWrapper. Pre-Q never reaches
+        // here: useProcFS()=true routes to the Go-side procfs scan (UID only).
+        val cm = getSystemService(ConnectivityManager::class.java)
+            ?: error("connectivity service unavailable")
+        val uid = cm.getConnectionOwnerUid(
+            ipProtocol,
+            InetSocketAddress(src, srcPort),
+            InetSocketAddress(dst, dstPort),
+        )
+        if (uid == Process.INVALID_UID) error("connection owner not found")
+        val packages = packageManager.getPackagesForUid(uid)?.toList() ?: emptyList()
+        val owner = ConnectionOwner()
+        owner.userId = uid
+        owner.userName = packages.firstOrNull() ?: ""
+        owner.setAndroidPackageNames(ListStringIterator(packages))
+        return owner
+    }
 
     override fun readWIFIState(): WIFIState = Libbox.newWIFIState("", "")
     override fun localDNSTransport(): LocalDNSTransport? = null
@@ -660,4 +716,13 @@ class EmptyStringIterator : StringIterator {
     override fun hasNext(): Boolean = false
     override fun len(): Int = 0
     override fun next(): String = ""
+}
+
+class ListStringIterator(
+    private val items: List<String>
+) : StringIterator {
+    private var idx = 0
+    override fun hasNext(): Boolean = idx < items.size
+    override fun len(): Int = items.size
+    override fun next(): String = items[idx++]
 }

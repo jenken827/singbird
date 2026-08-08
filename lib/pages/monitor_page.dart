@@ -1,4 +1,6 @@
 // lib/pages/monitor_page.dart
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import '../services/monitor_service.dart';
 
@@ -244,6 +246,7 @@ class ConnectionHistoryTab extends StatefulWidget {
 
 class _ConnectionHistoryTabState extends State<ConnectionHistoryTab> {
   final List<Map<String, dynamic>> _records = [];
+  final Map<String, String> _appLabels = {};
   final _searchCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   String _query = '';
@@ -282,6 +285,7 @@ class _ConnectionHistoryTabState extends State<ConnectionHistoryTab> {
       _records.clear();
       _records.addAll(records);
       _hasMore = records.length >= limit;
+      await _resolveLabels(records);
     } catch (_) {
       if (mounted) setState(() => _loading = false);
       if (_records.isEmpty) {
@@ -294,6 +298,19 @@ class _ConnectionHistoryTabState extends State<ConnectionHistoryTab> {
     if (mounted) setState(() => _loading = false);
   }
 
+  /// 把记录里的包名批量解析为应用名（Android），Windows 路径跳过。
+  Future<void> _resolveLabels(List<Map<String, dynamic>> records) async {
+    if (!Platform.isAndroid) return;
+    final pkgs = records
+        .map((r) => (r['process_path'] as String?) ?? '')
+        .where((p) => p.isNotEmpty && !p.contains('\\'))
+        .toSet()
+        .toList();
+    if (pkgs.isEmpty) return;
+    final map = await MonitorService().resolveAppLabels(pkgs);
+    if (mounted && map.isNotEmpty) setState(() => _appLabels.addAll(map));
+  }
+
   void _filter(String q) => setState(() => _query = q.toLowerCase().trim());
 
   List<Map<String, dynamic>> get _filtered {
@@ -302,7 +319,9 @@ class _ConnectionHistoryTabState extends State<ConnectionHistoryTab> {
       final h = (r['host'] as String?) ?? '';
       final ip = (r['dest_ip'] as String?) ?? '';
       final pp = (r['process_path'] as String?) ?? '';
-      return h.toLowerCase().contains(_query) || ip.toLowerCase().contains(_query) || pp.toLowerCase().contains(_query);
+      final label = _appLabels[pp] ?? '';
+      return h.toLowerCase().contains(_query) || ip.toLowerCase().contains(_query) ||
+          pp.toLowerCase().contains(_query) || label.toLowerCase().contains(_query);
     }).toList();
   }
 
@@ -387,7 +406,12 @@ class _ConnectionHistoryTabState extends State<ConnectionHistoryTab> {
                       final r = list[i];
                       final rc = _routeColor(r['outbound'] as String?);
                       final pp = (r['process_path'] as String?) ?? '';
-                      final ppLabel = pp.isNotEmpty ? pp.split('\\').last : null;
+                      final label = _appLabels[pp];
+                      final ppLabel = pp.isNotEmpty
+                          ? (label != null && label != pp
+                              ? '$label ($pp)'
+                              : pp.split('\\').last)
+                          : null;
                       final err = (r['error'] as String?) ?? '';
                       return ListTile(
                         dense: true,
